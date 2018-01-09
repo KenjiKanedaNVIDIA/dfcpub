@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync/atomic"
 
 	"cloud.google.com/go/storage"
@@ -65,7 +66,14 @@ func (obj *gcpif) getobj(w http.ResponseWriter, mpath string, bktname string, ob
 	if err != nil {
 		glog.Fatal(err)
 	}
-	rc, err := client.Bucket(bktname).Object(objname).NewReader(ctx)
+	o := client.Bucket(bktname).Object(objname)
+	attrs, err := o.Attrs(ctx)
+	if err != nil {
+		errstr := fmt.Sprintf("Failed to get attributes for object %s from bucket %s, err: %v", objname, bktname, err)
+		return webinterror(w, errstr)
+	}
+	omd5 := attrs.MD5
+	rc, err := o.NewReader(ctx)
 	if err != nil {
 		errstr := fmt.Sprintf("Failed to create rc for object %s to file %q, err: %v", objname, fname, err)
 		return webinterror(w, errstr)
@@ -89,6 +97,20 @@ func (obj *gcpif) getobj(w http.ResponseWriter, mpath string, bktname string, ob
 		errstr := fmt.Sprintf("Failed to download object %s to file %q, err: %v", objname, fname, err)
 		return webinterror(w, errstr)
 		// FIXME: checksetmounterror() - see aws.go
+	}
+	dmd5, err := computeMD5(fname)
+	if err != nil {
+		errstr := fmt.Sprintf("Failed to calculate MD5sum for downloaded file %s, err: %v", fname, err)
+		return webinterror(w, errstr)
+	}
+	if reflect.DeepEqual(omd5, dmd5) == false {
+		errstr := fmt.Sprintf("Object's %s MD5sum %v does not match with downloaded file MD5sum %v", objname, omd5, dmd5)
+		// Remove downloaded file.
+		err := os.Remove(fname)
+		if err != nil {
+			glog.Errorf("Failed to delete file %s, err: %v", fname, err)
+		}
+		return webinterror(w, errstr)
 	}
 
 	stats := getstorstats()

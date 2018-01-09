@@ -154,3 +154,20 @@ func ReadToNull(r io.Reader) (int64, error) {
 	w := &dummywriter{}
 	return copyBuffer(w, r)
 }
+
+// Calculate MD5 sum for a file.
+func computeMD5(filePath string) ([]byte, error) {
+	var result []byte
+	file, err := os.Open(filePath)
+	if err != nil {
+		return result, err
+	}
+	defer file.Close()
+
+	hash := md5.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return result, err
+	}
+
+	return hash.Sum(result), nil
+}
