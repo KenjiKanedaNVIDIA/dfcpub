@@ -5,16 +5,18 @@
 package dfc
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/golang/glog"
 )
 
@@ -44,13 +46,7 @@ func (obj *awsif) listbucket(w http.ResponseWriter, bucket string) error {
 
 func (obj *awsif) getobj(w http.ResponseWriter, mpath string, bktname string, keyname string) error {
 	fname := mpath + "/" + bktname + "/" + keyname
-	sess := createsession()
-	//
-	// TODO: Optimize downloader options (currently 5MB chunks and 5 concurrent downloads)
-	//
-	downloader := s3manager.NewDownloader(sess)
-
-	err := downloadobject(w, downloader, mpath, bktname, keyname)
+	err := downloadobject(w, mpath, bktname, keyname)
 	if err != nil {
 		return webinterror(w, err.Error())
 	}
@@ -59,7 +55,7 @@ func (obj *awsif) getobj(w http.ResponseWriter, mpath string, bktname string, ke
 }
 
 // This function download S3 object into local file.
-func downloadobject(w http.ResponseWriter, downloader *s3manager.Downloader,
+func downloadobject(w http.ResponseWriter,
 	mpath string, bucket string, kname string) error {
 
 	var file *os.File
@@ -79,15 +75,50 @@ func downloadobject(w http.ResponseWriter, downloader *s3manager.Downloader,
 		checksetmounterror(fname)
 		return err
 	}
-	bytes, err = downloader.Download(file, &s3.GetObjectInput{
+	sess := createsession()
+	s3Svc := s3.New(sess)
+
+	obj, err := s3Svc.GetObject(&s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(kname),
 	})
+	defer obj.Body.Close()
+	defer file.Close()
 	if err != nil {
 		glog.Errorf("Failed to download key %s from bucket %s, err: %v", kname, bucket, err)
 		checksetmounterror(fname)
 		return err
 	}
+	// Get ETag from object header
+	omd5, _ := strconv.Unquote(*obj.ETag)
+
+	_, err = io.Copy(file, obj.Body)
+	if err != nil {
+		glog.Errorf("Failed to copy obj key %s from bucket %s, err: %v", kname, bucket, err)
+		checksetmounterror(fname)
+		return err
+	}
+	fmd5, err := computeMD5(fname)
+	if err != nil {
+		glog.Errorf("Failed to calculate MD5sum for downloaded file %s, err: %v", fname, err)
+		checksetmounterror(fname)
+		return err
+	}
+	if omd5 != fmd5 {
+		errstr := fmt.Sprintf("Object's %s MD5sum %v does not match with file(%s)'s MD5sum %v",
+			kname, omd5, fname, fmd5)
+		glog.Error(errstr)
+		err := os.Remove(fname)
+		if err != nil {
+			glog.Errorf("Failed to delete file %s, err: %v", fname, err)
+		}
+		checksetmounterror(fname)
+		return errors.New(errstr)
+	} else {
+		glog.Infof("Object's %s MD5sum %v does MATCH with file(%s)'s MD5sum %v",
+			kname, omd5, fname, fmd5)
+	}
+
 	stats := getstorstats()
 	atomic.AddInt64(&stats.bytesloaded, bytes)
 	return nil

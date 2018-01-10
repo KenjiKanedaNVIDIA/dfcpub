@@ -6,6 +6,8 @@ package dfc
 
 import (
 	"bufio"
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -156,18 +158,19 @@ func ReadToNull(r io.Reader) (int64, error) {
 }
 
 // Calculate MD5 sum for a file.
-func computeMD5(filePath string) ([]byte, error) {
-	var result []byte
+func computeMD5(filePath string) (string, error) {
+	var resultmd5str string
 	file, err := os.Open(filePath)
 	if err != nil {
-		return result, err
+		return resultmd5str, err
 	}
 	defer file.Close()
 
 	hash := md5.New()
 	if _, err := io.Copy(hash, file); err != nil {
-		return result, err
+		return resultmd5str, err
 	}
-
-	return hash.Sum(result), nil
+	hashInBytes := hash.Sum(nil)[:16]
+	resultmd5str = hex.EncodeToString(hashInBytes)
+	return resultmd5str, nil
 }
