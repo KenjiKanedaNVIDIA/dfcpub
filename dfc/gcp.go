@@ -5,6 +5,7 @@
 package dfc
 
 import (
+	"crypto/md5"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -93,17 +94,16 @@ func (obj *gcpif) getobj(w http.ResponseWriter, mpath string, bktname string, ob
 		glog.Infof("Created file %q", fname)
 	}
 	defer file.Close()
-	bytes, err := io.Copy(file, rc)
+	hash := md5.New()
+	writer := io.MultiWriter(file, hash)
+	bytes, err := io.Copy(writer, rc)
 	if err != nil {
 		errstr := fmt.Sprintf("Failed to download object %s to file %q, err: %v", objname, fname, err)
 		return webinterror(w, errstr)
 		// FIXME: checksetmounterror() - see aws.go
 	}
-	fmd5, err := computeMD5(fname)
-	if err != nil {
-		errstr := fmt.Sprintf("Failed to calculate MD5sum for downloaded file %s, err: %v", fname, err)
-		return webinterror(w, errstr)
-	}
+	hashInBytes := hash.Sum(nil)[:16]
+	fmd5 := hex.EncodeToString(hashInBytes)
 	if omd5 != fmd5 {
 		errstr := fmt.Sprintf("Object's %s MD5sum %v does not match with file(%s)'s MD5sum %v",
 			objname, omd5, fname, fmd5)

@@ -5,6 +5,8 @@
 package dfc
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -92,18 +94,17 @@ func downloadobject(w http.ResponseWriter,
 	// Get ETag from object header
 	omd5, _ := strconv.Unquote(*obj.ETag)
 
-	_, err = io.Copy(file, obj.Body)
+	hash := md5.New()
+	writer := io.MultiWriter(file, hash)
+	_, err = io.Copy(writer, obj.Body)
+
 	if err != nil {
 		glog.Errorf("Failed to copy obj key %s from bucket %s, err: %v", kname, bucket, err)
 		checksetmounterror(fname)
 		return err
 	}
-	fmd5, err := computeMD5(fname)
-	if err != nil {
-		glog.Errorf("Failed to calculate MD5sum for downloaded file %s, err: %v", fname, err)
-		checksetmounterror(fname)
-		return err
-	}
+	hashInBytes := hash.Sum(nil)[:16]
+	fmd5 := hex.EncodeToString(hashInBytes)
 	if omd5 != fmd5 {
 		errstr := fmt.Sprintf("Object's %s MD5sum %v does not match with file(%s)'s MD5sum %v",
 			kname, omd5, fname, fmd5)
