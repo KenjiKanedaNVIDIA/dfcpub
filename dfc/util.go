@@ -6,8 +6,6 @@ package dfc
 
 import (
 	"bufio"
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -157,20 +155,24 @@ func ReadToNull(r io.Reader) (int64, error) {
 	return copyBuffer(w, r)
 }
 
-// Calculate MD5 sum for a file.
-func computeMD5(filePath string) (string, error) {
-	var resultmd5str string
-	file, err := os.Open(filePath)
-	if err != nil {
-		return resultmd5str, err
-	}
-	defer file.Close()
+func createfile(mpath string, bucket string, kname string) (*os.File, error) {
 
-	hash := md5.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return resultmd5str, err
+	var file *os.File
+	var err error
+	fname := mpath + "/" + bucket + "/" + kname
+	// strips the last part from filepath
+	dirname := filepath.Dir(fname)
+	if err = CreateDir(dirname); err != nil {
+		glog.Errorf("Failed to create local dir %q, err: %s", dirname, err)
+		checksetmounterror(fname)
+		return nil, err
 	}
-	hashInBytes := hash.Sum(nil)[:16]
-	resultmd5str = hex.EncodeToString(hashInBytes)
-	return resultmd5str, nil
+	file, err = os.Create(fname)
+	if err != nil {
+		glog.Errorf("Unable to create file %q, err: %v", fname, err)
+		checksetmounterror(fname)
+		return nil, err
+	}
+
+	return file, nil
 }

@@ -19,7 +19,7 @@ import (
 
 // proxyfilehdlr
 func proxyfilehdlr(w http.ResponseWriter, r *http.Request) {
-	assert(r.Method == http.MethodGet)
+	assert(r.Method == http.MethodGet || r.Method == http.MethodPut)
 	stats := getproxystats()
 	atomic.AddInt64(&stats.numget, 1)
 

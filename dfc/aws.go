@@ -12,13 +12,13 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"sync/atomic"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/golang/glog"
 )
 
@@ -60,21 +60,12 @@ func (obj *awsif) getobj(w http.ResponseWriter, mpath string, bktname string, ke
 func downloadobject(w http.ResponseWriter,
 	mpath string, bucket string, kname string) error {
 
-	var file *os.File
 	var err error
 	var bytes int64
-
 	fname := mpath + "/" + bucket + "/" + kname
-	// strips the last part from filepath
-	dirname := filepath.Dir(fname)
-	if err = CreateDir(dirname); err != nil {
-		glog.Errorf("Failed to create local dir %q, err: %s", dirname, err)
-		return err
-	}
-	file, err = os.Create(fname)
+	file, err := createfile(mpath, bucket, kname)
 	if err != nil {
 		glog.Errorf("Unable to create file %q, err: %v", fname, err)
-		checksetmounterror(fname)
 		return err
 	}
 	sess := createsession()
@@ -88,7 +79,6 @@ func downloadobject(w http.ResponseWriter,
 	defer file.Close()
 	if err != nil {
 		glog.Errorf("Failed to download key %s from bucket %s, err: %v", kname, bucket, err)
-		checksetmounterror(fname)
 		return err
 	}
 	// Get ETag from object header
@@ -97,11 +87,11 @@ func downloadobject(w http.ResponseWriter,
 	hash := md5.New()
 	writer := io.MultiWriter(file, hash)
 	_, err = io.Copy(writer, obj.Body)
-
 	if err != nil {
-		glog.Errorf("Failed to copy obj key %s from bucket %s, err: %v", kname, bucket, err)
+		glog.Errorf("Failed to copy obj err: %v", err)
 		checksetmounterror(fname)
 		return err
+
 	}
 	hashInBytes := hash.Sum(nil)[:16]
 	fmd5 := hex.EncodeToString(hashInBytes)
@@ -113,7 +103,6 @@ func downloadobject(w http.ResponseWriter,
 		if err != nil {
 			glog.Errorf("Failed to delete file %s, err: %v", fname, err)
 		}
-		checksetmounterror(fname)
 		return errors.New(errstr)
 	} else {
 		glog.Infof("Object's %s MD5sum %v does MATCH with file(%s)'s MD5sum %v",
@@ -122,5 +111,26 @@ func downloadobject(w http.ResponseWriter,
 
 	stats := getstorstats()
 	atomic.AddInt64(&stats.bytesloaded, bytes)
+	return nil
+}
+
+func (obj *awsif) putobj(r *http.Request, w http.ResponseWriter,
+	bucket string, kname string) error {
+	sess := createsession()
+	// Create an uploader with the session and default options
+	uploader := s3manager.NewUploader(sess)
+	// Upload the file to S3.
+	_, err := uploader.Upload(&s3manager.UploadInput{
+
+		Bucket: aws.String(bucket),
+		Key:    aws.String(kname),
+		Body:   r.Body,
+	})
+	if err != nil {
+		glog.Errorf("Failed to put key %s into bucket %s, err: %v", kname, bucket, err)
+		return webinterror(w, err.Error())
+	} else {
+		glog.Infof("Uploaded key %s into bucket %s", kname, bucket)
+	}
 	return nil
 }

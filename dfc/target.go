@@ -28,13 +28,14 @@ type gcpif struct {
 type cinterface interface {
 	listbucket(http.ResponseWriter, string) error
 	getobj(http.ResponseWriter, string, string, string) error
+	putobj(*http.Request, http.ResponseWriter, string, string) error
 }
 
 // storhdlr implements the target's REST API: checks if the named fobject
 // exists locallyi. If not, it downloads it to cache and (always)
 // sends it back via http
 func storhdlr(w http.ResponseWriter, r *http.Request) {
-	assert(r.Method == http.MethodGet)
+
 	stats := getstorstats()
 	//
 	// parse and validate REST API
@@ -50,50 +51,57 @@ func storhdlr(w http.ResponseWriter, r *http.Request) {
 		keyname = apitems[3]
 	}
 	atomic.AddInt64(&stats.numget, 1)
-	//
-	// list the bucket and return
-	//
-	if len(keyname) == 0 {
-		getcloudif().listbucket(w, bktname)
-		return
-	}
-	//
-	// get from the bucket
-	//
-	mpath := hrwMpath(bktname + "/" + keyname)
-	assert(len(mpath) > 0) // see mountpath.enabled
-	fname := mpath + "/" + bktname + "/" + keyname
-	_, err := os.Stat(fname)
-	if os.IsNotExist(err) {
-		atomic.AddInt64(&stats.numcoldget, 1)
-		glog.Infof("Bucket %s key %s fqn %q is not cached", bktname, keyname, fname)
-		//
-		// TODO: do getcloudif().getobj() and write http response in parallel
-		//
-		if err = getcloudif().getobj(w, mpath, bktname, keyname); err != nil {
+	if r.Method == http.MethodPut {
+		if err := getcloudif().putobj(r, w, bktname, keyname); err != nil {
 			return
 		}
-	} else if glog.V(2) {
-		glog.Infof("Bucket %s key %s fqn %q is cached", bktname, keyname, fname)
-	}
-	file, err := os.Open(fname)
-	if err != nil {
-		glog.Errorf("Failed to open %q, err: %v", fname, err)
-		checksetmounterror(fname)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		atomic.AddInt64(&stats.numerr, 1)
 	} else {
-		defer file.Close()
-		// NOTE: the following copyBuffer() call is equaivalent to:
-		// 	rt, _ := w.(io.ReaderFrom)
-		// 	written, err := rt.ReadFrom(file) ==> sendfile path
-		written, err := copyBuffer(w, file)
+		assert(r.Method == http.MethodGet)
+		//
+		// list the bucket and return
+		//
+		if len(keyname) == 0 {
+			getcloudif().listbucket(w, bktname)
+			return
+		}
+		//
+		// get from the bucket
+		//
+		mpath := hrwMpath(bktname + "/" + keyname)
+		assert(len(mpath) > 0) // see mountpath.enabled
+		fname := mpath + "/" + bktname + "/" + keyname
+		_, err := os.Stat(fname)
+		if os.IsNotExist(err) {
+			atomic.AddInt64(&stats.numcoldget, 1)
+			glog.Infof("Bucket %s key %s fqn %q is not cached", bktname, keyname, fname)
+			//
+			// TODO: do getcloudif().getobj() and write http response in parallel
+			//
+			if err = getcloudif().getobj(w, mpath, bktname, keyname); err != nil {
+				return
+			}
+		} else if glog.V(2) {
+			glog.Infof("Bucket %s key %s fqn %q is cached", bktname, keyname, fname)
+		}
+		file, err := os.Open(fname)
 		if err != nil {
-			glog.Errorf("Failed to copy %q to http response, err: %v", fname, err)
+			glog.Errorf("Failed to open %q, err: %v", fname, err)
+			checksetmounterror(fname)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			atomic.AddInt64(&stats.numerr, 1)
-		} else if glog.V(3) {
-			glog.Infof("Copied %q to http response (size %.2f MB)", fname, float64(written)/1000/1000)
+		} else {
+			defer file.Close()
+			// NOTE: the following copyBuffer() call is equaivalent to:
+			// 	rt, _ := w.(io.ReaderFrom)
+			// 	written, err := rt.ReadFrom(file) ==> sendfile path
+			written, err := copyBuffer(w, file)
+			if err != nil {
+				glog.Errorf("Failed to copy %q to http response, err: %v", fname, err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				atomic.AddInt64(&stats.numerr, 1)
+			} else if glog.V(3) {
+				glog.Infof("Copied %q to http response (size %.2f MB)", fname, float64(written)/1000/1000)
+			}
 		}
 	}
 	glog.Flush()

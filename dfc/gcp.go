@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sync/atomic"
 
 	"cloud.google.com/go/storage"
@@ -55,8 +54,8 @@ func (obj *gcpif) listbucket(w http.ResponseWriter, bucket string) error {
 }
 
 // FIXME: revisit error processing
-func (obj *gcpif) getobj(w http.ResponseWriter, mpath string, bktname string, objname string) error {
-	fname := mpath + "/" + bktname + "/" + objname
+func (obj *gcpif) getobj(w http.ResponseWriter, mpath string, bucket string, objname string) error {
+	fname := mpath + "/" + bucket + "/" + objname
 
 	projid, errstr := getProjID()
 	if projid == "" {
@@ -67,10 +66,10 @@ func (obj *gcpif) getobj(w http.ResponseWriter, mpath string, bktname string, ob
 	if err != nil {
 		glog.Fatal(err)
 	}
-	o := client.Bucket(bktname).Object(objname)
+	o := client.Bucket(bucket).Object(objname)
 	attrs, err := o.Attrs(ctx)
 	if err != nil {
-		errstr := fmt.Sprintf("Failed to get attributes for object %s from bucket %s, err: %v", objname, bktname, err)
+		errstr := fmt.Sprintf("Failed to get attributes for object %s from bucket %s, err: %v", objname, bucket, err)
 		return webinterror(w, errstr)
 	}
 	omd5 := hex.EncodeToString(attrs.MD5)
@@ -80,13 +79,7 @@ func (obj *gcpif) getobj(w http.ResponseWriter, mpath string, bktname string, ob
 		return webinterror(w, errstr)
 	}
 	defer rc.Close()
-	// strips the last part from filepath
-	dirname := filepath.Dir(fname)
-	if err = CreateDir(dirname); err != nil {
-		glog.Errorf("Failed to create local dir %q, err: %s", dirname, err)
-		return webinterror(w, errstr)
-	}
-	file, err := os.Create(fname)
+	file, err := createfile(mpath, bucket, objname)
 	if err != nil {
 		errstr := fmt.Sprintf("Failed to create file %q, err: %v", fname, err)
 		return webinterror(w, errstr)
@@ -120,5 +113,31 @@ func (obj *gcpif) getobj(w http.ResponseWriter, mpath string, bktname string, ob
 
 	stats := getstorstats()
 	atomic.AddInt64(&stats.bytesloaded, bytes)
+	return nil
+}
+
+func (obj *gcpif) putobj(r *http.Request, w http.ResponseWriter,
+	bucket string, kname string) error {
+
+	projid, errstr := getProjID()
+	if projid == "" {
+		return webinterror(w, errstr)
+	}
+	ctx := context.Background()
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		errstr := fmt.Sprintf("Failed to create client for bucket %s object %s , err: %v",
+			bucket, kname, err)
+		return webinterror(w, errstr)
+	}
+
+	wc := client.Bucket(bucket).Object(kname).NewWriter(ctx)
+	defer wc.Close()
+	_, err = io.Copy(wc, r.Body)
+	if err != nil {
+		errstr := fmt.Sprintf("Failed to upload object %s into bucket %s , err: %v",
+			kname, bucket, err)
+		return webinterror(w, errstr)
+	}
 	return nil
 }
