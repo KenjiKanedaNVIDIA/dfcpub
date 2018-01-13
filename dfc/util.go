@@ -164,3 +164,25 @@ func ReadToNull(r io.Reader) (int64, error) {
 	w := &dummywriter{}
 	return copyBuffer(w, r)
 }
+
+func createfile(mpath string, bucket string, kname string) (*os.File, error) {
+
+	var file *os.File
+	var err error
+	fname := mpath + "/" + bucket + "/" + kname
+	// strips the last part from filepath
+	dirname := filepath.Dir(fname)
+	if err = CreateDir(dirname); err != nil {
+		glog.Errorf("Failed to create local dir %q, err: %s", dirname, err)
+		checksetmounterror(fname)
+		return nil, err
+	}
+	file, err = os.Create(fname)
+	if err != nil {
+		glog.Errorf("Unable to create file %q, err: %v", fname, err)
+		checksetmounterror(fname)
+		return nil, err
+	}
+
+	return file, nil
+}

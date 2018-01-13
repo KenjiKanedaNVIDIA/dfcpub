@@ -5,10 +5,14 @@
 package dfc
 
 import (
+	"crypto/md5"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
-	"path/filepath"
+	"strconv"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -43,13 +47,7 @@ func (obj *awsif) listbucket(w http.ResponseWriter, bucket string) error {
 
 func (obj *awsif) getobj(w http.ResponseWriter, mpath string, bktname string, keyname string) error {
 	fname := mpath + "/" + bktname + "/" + keyname
-	sess := createsession()
-	//
-	// TODO: Optimize downloader options (currently 5MB chunks and 5 concurrent downloads)
-	//
-	downloader := s3manager.NewDownloader(sess)
-
-	err := downloadobject(w, downloader, mpath, bktname, keyname)
+	err := downloadobject(w, mpath, bktname, keyname)
 	if err != nil {
 		return webinterror(w, err.Error())
 	}
@@ -58,36 +56,80 @@ func (obj *awsif) getobj(w http.ResponseWriter, mpath string, bktname string, ke
 }
 
 // This function download S3 object into local file.
-func downloadobject(w http.ResponseWriter, downloader *s3manager.Downloader,
+func downloadobject(w http.ResponseWriter,
 	mpath string, bucket string, kname string) error {
 
-	var file *os.File
 	var err error
 	var bytes int64
-
 	fname := mpath + "/" + bucket + "/" + kname
-	// strips the last part from filepath
-	dirname := filepath.Dir(fname)
-	if err = CreateDir(dirname); err != nil {
-		glog.Errorf("Failed to create local dir %q, err: %s", dirname, err)
-		return err
-	}
-	file, err = os.Create(fname)
+	file, err := createfile(mpath, bucket, kname)
 	if err != nil {
 		glog.Errorf("Unable to create file %q, err: %v", fname, err)
-		checksetmounterror(fname)
 		return err
 	}
-	bytes, err = downloader.Download(file, &s3.GetObjectInput{
+	sess := createsession()
+	s3Svc := s3.New(sess)
+
+	obj, err := s3Svc.GetObject(&s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(kname),
 	})
+	defer obj.Body.Close()
+	defer file.Close()
 	if err != nil {
 		glog.Errorf("Failed to download key %s from bucket %s, err: %v", kname, bucket, err)
-		checksetmounterror(fname)
 		return err
 	}
+	// Get ETag from object header
+	omd5, _ := strconv.Unquote(*obj.ETag)
+
+	hash := md5.New()
+	writer := io.MultiWriter(file, hash)
+	_, err = io.Copy(writer, obj.Body)
+	if err != nil {
+		glog.Errorf("Failed to copy obj err: %v", err)
+		checksetmounterror(fname)
+		return err
+
+	}
+	hashInBytes := hash.Sum(nil)[:16]
+	fmd5 := hex.EncodeToString(hashInBytes)
+	if omd5 != fmd5 {
+		errstr := fmt.Sprintf("Object's %s MD5sum %v does not match with file(%s)'s MD5sum %v",
+			kname, omd5, fname, fmd5)
+		glog.Error(errstr)
+		err := os.Remove(fname)
+		if err != nil {
+			glog.Errorf("Failed to delete file %s, err: %v", fname, err)
+		}
+		return errors.New(errstr)
+	} else {
+		glog.Infof("Object's %s MD5sum %v does MATCH with file(%s)'s MD5sum %v",
+			kname, omd5, fname, fmd5)
+	}
+
 	stats := getstorstats()
 	statsAdd(&stats.Bytesloaded, bytes)
+	return nil
+}
+
+func (obj *awsif) putobj(r *http.Request, w http.ResponseWriter,
+	bucket string, kname string) error {
+	sess := createsession()
+	// Create an uploader with the session and default options
+	uploader := s3manager.NewUploader(sess)
+	// Upload the file to S3.
+	_, err := uploader.Upload(&s3manager.UploadInput{
+
+		Bucket: aws.String(bucket),
+		Key:    aws.String(kname),
+		Body:   r.Body,
+	})
+	if err != nil {
+		glog.Errorf("Failed to put key %s into bucket %s, err: %v", kname, bucket, err)
+		return webinterror(w, err.Error())
+	} else {
+		glog.Infof("Uploaded key %s into bucket %s", kname, bucket)
+	}
 	return nil
 }
