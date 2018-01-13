@@ -125,21 +125,15 @@ func Test_download(t *testing.T) {
 	// Now find the total number of files and data downloaed
 	var sumtotfiles int = 0
 	var sumtotbytes int64 = 0
-	summary := "Summary:\n"
 	for i := 0; i < numworkers; i++ {
-		var totfiles int = 0
-		var totbytes int64 = 0
-		for res := range result_chans[i] {
-			totfiles += res.totfiles
-			totbytes += res.totbytes
-		}
-		sumtotbytes += totbytes
-		sumtotfiles += totfiles
-		summary += fmt.Sprintf("\n\tWorker %3d downloaded %4d files and copied (size %.2f KB)", i, totfiles, float64(totbytes/1000))
+		res := <-result_chans[i]
+		sumtotbytes += res.totbytes
+		sumtotfiles += res.totfiles
+		t.Logf("Worker #%d: %d files, size %.2f MB (%d B)",
+			i, res.totfiles, float64(res.totbytes/1000/1000), res.totbytes)
 	}
-	summary += fmt.Sprintf("\n\t--\n\tTotal of %4d workers downloaded a total of %4d files and copied (size %.2f KB)",
-		numworkers, sumtotfiles, float64(sumtotbytes/1000))
-	t.Logf("%s", summary)
+	t.Logf("\nSummary: %d workers, %d files, total size %.2f MB (%d B)",
+		numworkers, sumtotfiles, float64(sumtotbytes/1000/1000), sumtotbytes)
 
 	if sumtotfiles != numExpected {
 		s := fmt.Sprintf("Not all files downloaded. Expected: %d, Downloaded:%d", numExpected, sumtotfiles)
